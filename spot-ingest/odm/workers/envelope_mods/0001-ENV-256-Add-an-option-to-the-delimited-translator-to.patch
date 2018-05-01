@@ -1,0 +1,109 @@
+From 97f0a30ac4a250d077d5be1511e3c46292e75341 Mon Sep 17 00:00:00 2001
+From: Curtis <curtis@cloudera.com>
+Date: Mon, 30 Apr 2018 21:46:19 -0400
+Subject: [PATCH] [ENV-256] Add an option to the delimited translator to allow
+ regex delimiters
+
+---
+ docs/configurations.adoc                           |  7 ++++--
+ .../input/translate/DelimitedTranslator.java       |  7 +++++-
+ .../input/translate/TestDelimitedTranslator.java   | 26 ++++++++++++++++++++++
+ 3 files changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/docs/configurations.adoc b/docs/configurations.adoc
+index cfea7a3..1983530 100644
+--- a/docs/configurations.adoc
++++ b/docs/configurations.adoc
+@@ -414,8 +414,11 @@ Translator configurations belong to data steps, and have the `steps.[stepname].i
+ |delimiter
+ |The delimiter that separates the fields of the message.
+ 
++|delimiter-regex
++|If `true`, the `delimiter` string will be interpreted as a regular expression. Default `false` (interpret as a literal value).
++
+ |field.names
+-|The list of fields to read from the Avro record.
++|The list of fields to read from the delimited record.
+ 
+ |field.types
+ |The list of data types of the fields in the same order as the list of field names. Supported types are detailed in <<Data Type Support>>.
+@@ -1200,4 +1203,4 @@ When using an Avro schema to define the StructType, either via an inline Avro li
+ 
+ |decimal (LogicalType, as `bytes`)
+ |Decimal
+-|===
+\ No newline at end of file
++|===
+diff --git a/lib/src/main/java/com/cloudera/labs/envelope/input/translate/DelimitedTranslator.java b/lib/src/main/java/com/cloudera/labs/envelope/input/translate/DelimitedTranslator.java
+index b5eb571..6c1f36f 100644
+--- a/lib/src/main/java/com/cloudera/labs/envelope/input/translate/DelimitedTranslator.java
++++ b/lib/src/main/java/com/cloudera/labs/envelope/input/translate/DelimitedTranslator.java
+@@ -42,9 +42,11 @@ public class DelimitedTranslator implements Translator<String, String>, Provides
+   private StructType schema;
+   private List<Object> values = Lists.newArrayList();
+   private boolean doesAppendRaw;
++  private boolean delimiterRegex;
+ 
+   public static final String DELIMITER_CONFIG_NAME = "delimiter";
+   public static final String FIELD_NAMES_CONFIG_NAME = "field.names";
++  public static final String DELIMITER_REGEX_CONFIG_NAME = "delimiter-regex";
+   public static final String FIELD_TYPES_CONFIG_NAME = "field.types";
+ 
+   @Override
+@@ -52,6 +54,8 @@ public class DelimitedTranslator implements Translator<String, String>, Provides
+     delimiter = resolveDelimiter(config.getString(DELIMITER_CONFIG_NAME));
+     fieldNames = config.getStringList(FIELD_NAMES_CONFIG_NAME);
+     fieldTypes = config.getStringList(FIELD_TYPES_CONFIG_NAME);
++    delimiterRegex = config.hasPath(DELIMITER_REGEX_CONFIG_NAME) &&
++                     config.getBoolean(DELIMITER_REGEX_CONFIG_NAME);
+     doesAppendRaw = TranslatorUtils.doesAppendRaw(config);
+     if (doesAppendRaw) {
+       fieldNames.add(TranslatorUtils.getAppendRawKeyFieldName(config));
+@@ -66,7 +70,8 @@ public class DelimitedTranslator implements Translator<String, String>, Provides
+   @Override
+   public Iterable<Row> translate(String key, String value) {
+     int numFields = (doesAppendRaw) ? (fieldNames.size() - 2) : fieldNames.size();
+-    String[] stringValues = value.split(Pattern.quote(delimiter), numFields);
++    String[] stringValues = value.split((delimiterRegex) ?
++                            delimiter : Pattern.quote(delimiter), fieldNames.size());
+     values.clear();
+ 
+     for (int valuePos = 0; valuePos < numFields; valuePos++) {
+diff --git a/lib/src/test/java/com/cloudera/labs/envelope/input/translate/TestDelimitedTranslator.java b/lib/src/test/java/com/cloudera/labs/envelope/input/translate/TestDelimitedTranslator.java
+index bfbbc93..8f0386e 100644
+--- a/lib/src/test/java/com/cloudera/labs/envelope/input/translate/TestDelimitedTranslator.java
++++ b/lib/src/test/java/com/cloudera/labs/envelope/input/translate/TestDelimitedTranslator.java
+@@ -143,4 +143,30 @@ public class TestDelimitedTranslator {
+     assertEquals(r.get(3), null);
+     assertEquals(r.get(4), null);
+   }
++
++  @Test
++  public void testRegexDelimiter() throws Exception {
++    String delimited = "val1 \"val2 ...\" val3 \"val4 val5\"";
++    
++    Config config = ConfigFactory.empty()
++        .withValue(DelimitedTranslator.FIELD_NAMES_CONFIG_NAME, ConfigValueFactory.fromIterable(
++            Lists.newArrayList("field1", "field2", "field3", "field4")))
++        .withValue(DelimitedTranslator.FIELD_TYPES_CONFIG_NAME, ConfigValueFactory.fromIterable(
++            Lists.newArrayList("string", "string", "string", "string")))
++        .withValue(DelimitedTranslator.DELIMITER_CONFIG_NAME, 
++            ConfigValueFactory.fromAnyRef(" (?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)"))
++        .withValue(DelimitedTranslator.DELIMITER_REGEX_CONFIG_NAME, 
++            ConfigValueFactory.fromAnyRef(true));
++    
++    Translator<String, String> t = new DelimitedTranslator();
++    t.configure(config);
++    
++    Row r = t.translate("testkey", delimited).iterator().next();
++    
++    assertEquals(r.length(), 4);
++    assertEquals(r.get(0), "val1");
++    assertEquals(r.get(1), "\"val2 ...\"");
++    assertEquals(r.get(2), "val3");
++    assertEquals(r.get(3), "\"val4 val5\"");
++  }
+ }
+-- 
+1.8.3.1
+

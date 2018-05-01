@@ -1,0 +1,133 @@
+From a37818b7207ec021107819cfe10bb187743f02b4 Mon Sep 17 00:00:00 2001
+From: Curtis <curtis@cloudera.com>
+Date: Sun, 29 Apr 2018 09:09:53 -0400
+Subject: [PATCH] [ENV-258] Fix delimited translator to handle missing fields
+
+---
+ .../input/translate/DelimitedTranslator.java       | 65 +++++++++++-----------
+ .../input/translate/TestDelimitedTranslator.java   | 24 ++++++++
+ 2 files changed, 58 insertions(+), 31 deletions(-)
+
+diff --git a/lib/src/main/java/com/cloudera/labs/envelope/input/translate/DelimitedTranslator.java b/lib/src/main/java/com/cloudera/labs/envelope/input/translate/DelimitedTranslator.java
+index 98a0bca..b5eb571 100644
+--- a/lib/src/main/java/com/cloudera/labs/envelope/input/translate/DelimitedTranslator.java
++++ b/lib/src/main/java/com/cloudera/labs/envelope/input/translate/DelimitedTranslator.java
+@@ -52,7 +52,6 @@ public class DelimitedTranslator implements Translator<String, String>, Provides
+     delimiter = resolveDelimiter(config.getString(DELIMITER_CONFIG_NAME));
+     fieldNames = config.getStringList(FIELD_NAMES_CONFIG_NAME);
+     fieldTypes = config.getStringList(FIELD_TYPES_CONFIG_NAME);
+-    
+     doesAppendRaw = TranslatorUtils.doesAppendRaw(config);
+     if (doesAppendRaw) {
+       fieldNames.add(TranslatorUtils.getAppendRawKeyFieldName(config));
+@@ -66,40 +65,44 @@ public class DelimitedTranslator implements Translator<String, String>, Provides
+ 
+   @Override
+   public Iterable<Row> translate(String key, String value) {
+-    String[] stringValues = value.split(Pattern.quote(delimiter), fieldNames.size());
++    int numFields = (doesAppendRaw) ? (fieldNames.size() - 2) : fieldNames.size();
++    String[] stringValues = value.split(Pattern.quote(delimiter), numFields);
+     values.clear();
+ 
+-    for (int valuePos = 0; valuePos < stringValues.length; valuePos++) {
+-      String fieldValue = stringValues[valuePos];
+-      
+-      if (fieldValue.length() == 0) {
+-        values.add(null);
+-      }
+-      else {
+-        switch (fieldTypes.get(valuePos)) {
+-          case "string":
+-            values.add(fieldValue);
+-            break;
+-          case "float":
+-            values.add(Float.parseFloat(fieldValue));
+-            break;
+-          case "double":
+-            values.add(Double.parseDouble(fieldValue));
+-            break;
+-          case "int":
+-            values.add(Integer.parseInt(fieldValue));
+-            break;
+-          case "long":
+-            values.add(Long.parseLong(fieldValue));
+-            break;
+-          case "boolean":
+-            values.add(Boolean.parseBoolean(fieldValue));
+-            break;
+-          default:
+-            throw new RuntimeException("Unsupported delimited field type: " + fieldTypes.get(valuePos));
++    for (int valuePos = 0; valuePos < numFields; valuePos++) {
++      if (valuePos < stringValues.length) {
++        String fieldValue = stringValues[valuePos];
++     
++        if (fieldValue.length() == 0) {
++          values.add(null);
+         }
++        else {
++          switch (fieldTypes.get(valuePos)) {
++            case "string":
++              values.add(fieldValue);
++              break;
++            case "float":
++              values.add(Float.parseFloat(fieldValue));
++              break;
++            case "double":
++              values.add(Double.parseDouble(fieldValue));
++              break;
++            case "int":
++              values.add(Integer.parseInt(fieldValue));
++              break;
++            case "long":
++              values.add(Long.parseLong(fieldValue));
++              break;
++            case "boolean":
++              values.add(Boolean.parseBoolean(fieldValue));
++              break;
++            default:
++              throw new RuntimeException("Unsupported delimited field type: " + fieldTypes.get(valuePos));
++          }
++        }
++      } else {
++        values.add(null);
+       }
+-
+     }
+ 
+     Row row = RowFactory.create(values.toArray());
+diff --git a/lib/src/test/java/com/cloudera/labs/envelope/input/translate/TestDelimitedTranslator.java b/lib/src/test/java/com/cloudera/labs/envelope/input/translate/TestDelimitedTranslator.java
+index 69c01db..bfbbc93 100644
+--- a/lib/src/test/java/com/cloudera/labs/envelope/input/translate/TestDelimitedTranslator.java
++++ b/lib/src/test/java/com/cloudera/labs/envelope/input/translate/TestDelimitedTranslator.java
+@@ -119,4 +119,28 @@ public class TestDelimitedTranslator {
+     assertEquals(r2.get(3), "TYPE");
+     assertEquals(r2.get(4), null);
+   }
++
++  @Test
++  public void testNullMissing() throws Exception {
++    String delimited = "val1 2 34";
++    
++    Config config = ConfigFactory.empty()
++        .withValue(DelimitedTranslator.FIELD_NAMES_CONFIG_NAME, ConfigValueFactory.fromIterable(
++            Lists.newArrayList("field1", "field2", "field3", "field4", "field5")))
++        .withValue(DelimitedTranslator.FIELD_TYPES_CONFIG_NAME, ConfigValueFactory.fromIterable(
++            Lists.newArrayList("string", "int", "long", "int", "boolean")))
++        .withValue(DelimitedTranslator.DELIMITER_CONFIG_NAME, ConfigValueFactory.fromAnyRef(" "));
++    
++    Translator<String, String> t = new DelimitedTranslator();
++    t.configure(config);
++    
++    Row r = t.translate("testkey", delimited).iterator().next();
++    
++    assertEquals(r.length(), 5);
++    assertEquals(r.get(0), "val1");
++    assertEquals(r.get(1), 2);
++    assertEquals(r.get(2), 34L);
++    assertEquals(r.get(3), null);
++    assertEquals(r.get(4), null);
++  }
+ }
+-- 
+1.8.3.1
+
